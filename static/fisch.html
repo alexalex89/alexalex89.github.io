@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Fisch im Meer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  canvas {
+    display: block;
+    cursor: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+const GAME_WIDTH = 480;
+const GAME_HEIGHT = window.innerHeight;
+canvas.width = GAME_WIDTH;
+canvas.height = GAME_HEIGHT;
+
+window.addEventListener('resize', () => {
+  canvas.height = window.innerHeight;
+});
+
+// --- Game State ---
+const STATE = { MENU: 0, PLAYING: 1, LEVEL_COMPLETE: 2, GAME_OVER: 3 };
+let gameState = STATE.MENU;
+let level = 1;
+let lives = 3;
+let score = 0;
+let coinsCollected = 0;
+let coinsRequired = 0;
+let invincibleTimer = 0;
+let gameTime = 0;
+let scrollSpeed = 1.5;
+
+// --- Camera ---
+const camera = { x: 0, y: 0 };
+
+// --- Input ---
+const keys = {};
+window.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (gameState === STATE.MENU && e.code === 'Space') startGame();
+  if (gameState === STATE.GAME_OVER && e.code === 'Space') resetGame();
+  if (gameState === STATE.LEVEL_COMPLETE && e.code === 'Space') nextLevel();
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// --- Touch Input ---
+let touchY = null;
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (gameState === STATE.MENU) { startGame(); return; }
+  if (gameState === STATE.GAME_OVER) { resetGame(); return; }
+  if (gameState === STATE.LEVEL_COMPLETE) { nextLevel(); return; }
+  touchY = e.touches[0].clientY;
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (e.touches.length > 0) touchY = e.touches[0].clientY;
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  touchY = null;
+}, { passive: false });
+
+// --- Fish ---
+const fish = {
+  x: 0, y: 0,
+  vx: 0, vy: 0,
+  width: 48, height: 28,
+  facing: 1,
+  swimPhase: 0,
+  speed: 3,
+  friction: 0.92,
+};
+
+// --- World ---
+let worldWidth = 2000;
+let worldHeight = 1500;
+let oilSpills = [];
+let coins = [];
+let bubbles = [];
+let particles = [];
+let seaweedPatches = [];
+
+// --- Level Generation ---
+function generateLevel(lvl) {
+  worldWidth = 3000 + lvl * 800;
+  worldHeight = canvas.height;
+  scrollSpeed = 1.5 + lvl * 0.3;
+
+  fish.x = 120;
+  fish.y = worldHeight / 2;
+  fish.vx = 0;
+  fish.vy = 0;
+
+  const oilCount = 8 + lvl * 5;
+  const coinCount = 5 + lvl * 2;
+  coinsRequired = coinCount;
+  coinsCollected = 0;
+
+  oilSpills = [];
+  for (let i = 0; i < oilCount; i++) {
+    oilSpills.push({
+      x: GAME_WIDTH + 200 + Math.random() * (worldWidth - GAME_WIDTH - 400),
+      y: 80 + Math.random() * (worldHeight - 160),
+      radius: 30 + Math.random() * 25 + lvl * 3,
+      vx: 0,
+      vy: (Math.random() - 0.5) * (0.5 + lvl * 0.3),
+      phase: Math.random() * Math.PI * 2,
+      wobbleSpeed: 0.5 + Math.random() * 1.5,
+    });
+  }
+
+  coins = [];
+  for (let i = 0; i < coinCount; i++) {
+    coins.push({
+      x: GAME_WIDTH + 100 + (i / coinCount) * (worldWidth - GAME_WIDTH - 300) + (Math.random() - 0.5) * 200,
+      y: 60 + Math.random() * (worldHeight - 120),
+      radius: 12,
+      collected: false,
+      phase: Math.random() * Math.PI * 2,
+    });
+  }
+
+  seaweedPatches = [];
+  const seaweedCount = 15 + lvl * 3;
+  for (let i = 0; i < seaweedCount; i++) {
+    seaweedPatches.push({
+      x: Math.random() * worldWidth,
+      height: 40 + Math.random() * 80,
+      blades: 3 + Math.floor(Math.random() * 4),
+      phase: Math.random() * Math.PI * 2,
+    });
+  }
+
+  bubbles = [];
+  particles = [];
+  camera.x = 0;
+  camera.y = 0;
+}
+
+function startGame() {
+  gameState = STATE.PLAYING;
+  level = 1;
+  lives = 3;
+  score = 0;
+  generateLevel(level);
+}
+
+function resetGame() {
+  gameState = STATE.MENU;
+}
+
+function nextLevel() {
+  level++;
+  generateLevel(level);
+  gameState = STATE.PLAYING;
+}
+
+// --- Collision ---
+function circleCollision(ax, ay, ar, bx, by, br) {
+  const dx = ax - bx;
+  const dy = ay - by;
+  return dx * dx + dy * dy < (ar + br) * (ar + br);
+}
+
+// --- Particles ---
+function spawnCoinParticles(x, y) {
+  for (let i = 0; i < 8; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1 + Math.random() * 2;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      decay: 0.02 + Math.random() * 0.02,
+      color: `hsl(${45 + Math.random() * 15}, 100%, ${60 + Math.random() * 20}%)`,
+      size: 2 + Math.random() * 3,
+    });
+  }
+}
+
+function spawnOilHitParticles(x, y) {
+  for (let i = 0; i < 12; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1 + Math.random() * 3;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1,
+      decay: 0.015 + Math.random() * 0.015,
+      color: `rgba(30, 20, 10, ${0.6 + Math.random() * 0.4})`,
+      size: 3 + Math.random() * 5,
+    });
+  }
+}
+
+// --- Update ---
+function update(dt) {
+  gameTime += dt;
+
+  if (gameState !== STATE.PLAYING) return;
+
+  // Fish movement (vertical only)
+  const accel = fish.speed * 0.15;
+  if (keys['ArrowUp'] || keys['KeyW']) fish.vy -= accel;
+  if (keys['ArrowDown'] || keys['KeyS']) fish.vy += accel;
+
+  // Touch: steer toward finger Y position
+  if (touchY !== null) {
+    const targetY = touchY + camera.y;
+    const diff = targetY - fish.y;
+    if (Math.abs(diff) > 5) {
+      fish.vy += Math.sign(diff) * accel * 1.2;
+    }
+  }
+
+  fish.vy *= fish.friction;
+
+  const maxSpeed = fish.speed;
+  if (Math.abs(fish.vy) > maxSpeed) {
+    fish.vy = Math.sign(fish.vy) * maxSpeed;
+  }
+
+  // Auto-scroll horizontally
+  fish.x += scrollSpeed;
+  fish.y += fish.vy;
+
+  fish.y = Math.max(fish.height + 55, Math.min(worldHeight - fish.height - 40, fish.y));
+  fish.facing = 1;
+
+  fish.swimPhase += 0.15;
+  const currentSpeed = Math.abs(fish.vy);
+
+  // Camera follows fish horizontally
+  camera.x = fish.x - 120;
+  camera.y = 0;
+
+  // Level complete when fish reaches the end
+  if (fish.x >= worldWidth - 100 && coinsCollected >= coinsRequired) {
+    gameState = STATE.LEVEL_COMPLETE;
+    score += 500 * level;
+  }
+
+  // Oil spill movement (vertical bounce only)
+  for (const oil of oilSpills) {
+    oil.y += oil.vy;
+    oil.phase += 0.02;
+
+    if (oil.y - oil.radius < 60 || oil.y + oil.radius > worldHeight - 40) oil.vy *= -1;
+    oil.y = Math.max(oil.radius + 60, Math.min(worldHeight - oil.radius - 40, oil.y));
+  }
+
+  // Invincibility
+  if (invincibleTimer > 0) invincibleTimer -= dt;
+
+  // Oil collision
+  if (invincibleTimer <= 0) {
+    for (const oil of oilSpills) {
+      if (circleCollision(fish.x, fish.y, fish.width * 0.4, oil.x, oil.y, oil.radius * 0.85)) {
+        lives--;
+        spawnOilHitParticles(fish.x, fish.y);
+        if (lives <= 0) {
+          gameState = STATE.GAME_OVER;
+          return;
+        }
+        invincibleTimer = 2;
+        break;
+      }
+    }
+  }
+
+  // Coin collection
+  for (const coin of coins) {
+    if (coin.collected) continue;
+    coin.phase += 0.05;
+    if (circleCollision(fish.x, fish.y, fish.width * 0.4, coin.x, coin.y, coin.radius)) {
+      coin.collected = true;
+      coinsCollected++;
+      score += 100 * level;
+      spawnCoinParticles(coin.x, coin.y);
+    }
+  }
+
+  // End of level without all coins = game over
+  if (fish.x >= worldWidth - 100 && coinsCollected < coinsRequired) {
+    gameState = STATE.GAME_OVER;
+  }
+
+  // Bubbles
+  if (Math.random() < 0.03) {
+    bubbles.push({
+      x: Math.random() * worldWidth,
+      y: worldHeight + 10,
+      radius: 2 + Math.random() * 6,
+      speed: 0.3 + Math.random() * 0.7,
+      wobble: Math.random() * Math.PI * 2,
+    });
+  }
+  if (currentSpeed > 0.5 && Math.random() < 0.15) {
+    bubbles.push({
+      x: fish.x - fish.facing * 20 + (Math.random() - 0.5) * 10,
+      y: fish.y + (Math.random() - 0.5) * 10,
+      radius: 1 + Math.random() * 3,
+      speed: 0.5 + Math.random() * 0.5,
+      wobble: Math.random() * Math.PI * 2,
+    });
+  }
+  for (let i = bubbles.length - 1; i >= 0; i--) {
+    bubbles[i].y -= bubbles[i].speed;
+    bubbles[i].wobble += 0.03;
+    bubbles[i].x += Math.sin(bubbles[i].wobble) * 0.3;
+    if (bubbles[i].y < -20) bubbles.splice(i, 1);
+  }
+
+  // Particles
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vx *= 0.96;
+    p.vy *= 0.96;
+    p.life -= p.decay;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+// --- Drawing ---
+function drawOceanBackground() {
+  const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  gradient.addColorStop(0, '#0a3d6b');
+  gradient.addColorStop(0.5, '#0e5a8a');
+  gradient.addColorStop(1, '#0b4a6f');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const rayCount = 5;
+  for (let i = 0; i < rayCount; i++) {
+    const rx = (i / rayCount) * canvas.width + Math.sin(gameTime * 0.3 + i) * 50;
+    ctx.beginPath();
+    ctx.moveTo(rx - 30, 0);
+    ctx.lineTo(rx + 80, canvas.height);
+    ctx.lineTo(rx - 80, canvas.height);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(100, 180, 255, 0.03)';
+    ctx.fill();
+  }
+}
+
+function drawSeafloor() {
+  const floorY = worldHeight - 40;
+  const screenFloorY = floorY - camera.y;
+  if (screenFloorY > canvas.height + 50) return;
+
+  ctx.save();
+  ctx.translate(-camera.x, -camera.y);
+
+  const sandGrad = ctx.createLinearGradient(0, floorY, 0, worldHeight);
+  sandGrad.addColorStop(0, '#8B7355');
+  sandGrad.addColorStop(1, '#6B5335');
+  ctx.fillStyle = sandGrad;
+  ctx.beginPath();
+  ctx.moveTo(0, worldHeight);
+  for (let x = 0; x <= worldWidth; x += 40) {
+    ctx.lineTo(x, floorY + Math.sin(x * 0.02) * 8);
+  }
+  ctx.lineTo(worldWidth, worldHeight);
+  ctx.closePath();
+  ctx.fill();
+
+  for (const sw of seaweedPatches) {
+    for (let b = 0; b < sw.blades; b++) {
+      const bx = sw.x + b * 8 - (sw.blades * 4);
+      ctx.beginPath();
+      ctx.strokeStyle = `hsl(${120 + b * 10}, 60%, ${25 + b * 5}%)`;
+      ctx.lineWidth = 3;
+      ctx.moveTo(bx, floorY);
+      const sway = Math.sin(gameTime * sw.phase * 0.3 + b) * 10;
+      ctx.quadraticCurveTo(bx + sway, floorY - sw.height * 0.5, bx + sway * 1.5, floorY - sw.height);
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
+function drawFish(x, y) {
+  ctx.save();
+  const sx = x - camera.x;
+  const sy = y - camera.y;
+  ctx.translate(sx, sy);
+  ctx.scale(fish.facing, 1);
+
+  if (invincibleTimer > 0 && Math.floor(invincibleTimer * 10) % 2 === 0) {
+    ctx.globalAlpha = 0.4;
+  }
+
+  // Tail
+  ctx.beginPath();
+  ctx.moveTo(-20, 0);
+  ctx.lineTo(-32, -12 + Math.sin(fish.swimPhase) * 5);
+  ctx.lineTo(-32, 12 + Math.sin(fish.swimPhase) * 5);
+  ctx.closePath();
+  ctx.fillStyle = '#e8832a';
+  ctx.fill();
+
+  // Body
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 24, 14, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#f5a623';
+  ctx.fill();
+  ctx.strokeStyle = '#d4841a';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Belly
+  ctx.beginPath();
+  ctx.ellipse(2, 4, 16, 7, 0, 0, Math.PI);
+  ctx.fillStyle = '#fdd77a';
+  ctx.fill();
+
+  // Dorsal fin
+  ctx.beginPath();
+  ctx.moveTo(-5, -12);
+  ctx.quadraticCurveTo(5, -22 + Math.sin(fish.swimPhase * 0.8) * 3, 12, -12);
+  ctx.fillStyle = '#e8832a';
+  ctx.fill();
+
+  // Eye
+  ctx.beginPath();
+  ctx.arc(12, -3, 5, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(13.5, -3, 2.5, 0, Math.PI * 2);
+  ctx.fillStyle = '#222';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(14, -4, 1, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+
+  // Mouth
+  ctx.beginPath();
+  ctx.arc(20, 2, 3, 0.1, 0.6);
+  ctx.strokeStyle = '#c46a10';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Pectoral fin
+  const tailWag = Math.sin(fish.swimPhase) * 0.3;
+  ctx.beginPath();
+  ctx.ellipse(2, 8, 8, 4, tailWag + 0.3, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(232, 131, 42, 0.7)';
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawOilSpill(oil) {
+  const sx = oil.x - camera.x;
+  const sy = oil.y - camera.y;
+  if (sx < -oil.radius * 2 || sx > canvas.width + oil.radius * 2 ||
+      sy < -oil.radius * 2 || sy > canvas.height + oil.radius * 2) return;
+
+  ctx.save();
+  ctx.translate(sx, sy);
+
+  const blobCount = 5;
+  for (let i = 0; i < blobCount; i++) {
+    const angle = (i / blobCount) * Math.PI * 2 + oil.phase;
+    const dist = oil.radius * 0.3;
+    const bx = Math.cos(angle + Math.sin(gameTime * oil.wobbleSpeed + i)) * dist;
+    const by = Math.sin(angle + Math.sin(gameTime * oil.wobbleSpeed + i)) * dist;
+    const br = oil.radius * (0.5 + Math.sin(gameTime + i * 1.3) * 0.1);
+
+    const grad = ctx.createRadialGradient(bx, by, 0, bx, by, br);
+    grad.addColorStop(0, 'rgba(20, 15, 5, 0.8)');
+    grad.addColorStop(0.6, 'rgba(40, 30, 10, 0.5)');
+    grad.addColorStop(1, 'rgba(50, 35, 15, 0)');
+
+    ctx.beginPath();
+    ctx.arc(bx, by, br, 0, Math.PI * 2);
+    ctx.fillStyle = grad;
+    ctx.fill();
+  }
+
+  // Iridescent sheen
+  const sheenGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, oil.radius * 0.6);
+  sheenGrad.addColorStop(0, 'rgba(100, 50, 150, 0.15)');
+  sheenGrad.addColorStop(0.5, 'rgba(50, 100, 100, 0.1)');
+  sheenGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+  ctx.beginPath();
+  ctx.arc(0, 0, oil.radius * 0.6, 0, Math.PI * 2);
+  ctx.fillStyle = sheenGrad;
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawCoin(coin) {
+  if (coin.collected) return;
+  const sx = coin.x - camera.x;
+  const sy = coin.y - camera.y;
+  if (sx < -30 || sx > canvas.width + 30 || sy < -30 || sy > canvas.height + 30) return;
+
+  ctx.save();
+  ctx.translate(sx, sy);
+
+  const bob = Math.sin(coin.phase + gameTime * 2) * 3;
+  const scaleX = Math.cos(gameTime * 3 + coin.phase);
+
+  ctx.translate(0, bob);
+  ctx.scale(scaleX, 1);
+
+  ctx.beginPath();
+  ctx.arc(0, 0, coin.radius + 4, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255, 215, 0, 0.2)';
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(0, 0, coin.radius, 0, Math.PI * 2);
+  const coinGrad = ctx.createRadialGradient(-3, -3, 0, 0, 0, coin.radius);
+  coinGrad.addColorStop(0, '#ffe14d');
+  coinGrad.addColorStop(0.7, '#f5a623');
+  coinGrad.addColorStop(1, '#c88a15');
+  ctx.fillStyle = coinGrad;
+  ctx.fill();
+  ctx.strokeStyle = '#a67212';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  if (Math.abs(scaleX) > 0.3) {
+    ctx.fillStyle = '#a67212';
+    ctx.font = 'bold 14px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('$', 0, 1);
+  }
+
+  ctx.restore();
+}
+
+function drawBubbles() {
+  ctx.save();
+  ctx.translate(-camera.x, -camera.y);
+  for (const b of bubbles) {
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(150, 210, 255, ${0.15 + b.radius * 0.02})`;
+    ctx.fill();
+    ctx.strokeStyle = `rgba(180, 220, 255, ${0.3 + b.radius * 0.03})`;
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(b.x - b.radius * 0.3, b.y - b.radius * 0.3, b.radius * 0.3, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawParticles() {
+  ctx.save();
+  ctx.translate(-camera.x, -camera.y);
+  for (const p of particles) {
+    ctx.globalAlpha = p.life;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+    ctx.fillStyle = p.color;
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawWorldBorder() {
+  ctx.save();
+  ctx.translate(-camera.x, -camera.y);
+  ctx.strokeStyle = 'rgba(255, 100, 100, 0.4)';
+  ctx.lineWidth = 4;
+  ctx.setLineDash([10, 10]);
+  ctx.strokeRect(5, 5, worldWidth - 10, worldHeight - 10);
+  ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawHUD() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+  ctx.fillRect(0, 0, canvas.width, 50);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 14px "Segoe UI", Arial, sans-serif';
+  ctx.textBaseline = 'middle';
+
+  ctx.fillText(`Lv ${level}`, 10, 18);
+
+  ctx.fillStyle = '#ffd700';
+  ctx.fillText(`${coinsCollected}/${coinsRequired}`, 10, 38);
+
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center';
+  ctx.fillText(`${score}`, canvas.width / 2, 25);
+
+  ctx.fillStyle = '#ff6666';
+  ctx.textAlign = 'right';
+  let livesText = '';
+  for (let i = 0; i < lives; i++) livesText += '\u2764 ';
+  ctx.fillText(livesText, canvas.width - 10, 25);
+
+  // Progress bar
+  const progress = Math.min(1, (fish.x - 120) / (worldWidth - 220));
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+  ctx.fillRect(80, 40, canvas.width - 160, 4);
+  ctx.fillStyle = '#4CAF50';
+  ctx.fillRect(80, 40, (canvas.width - 160) * progress, 4);
+
+  ctx.restore();
+}
+
+function drawMinimap() {
+  const mmW = canvas.width - 20;
+  const mmH = 16;
+  const mmX = 10;
+  const mmY = canvas.height - mmH - 10;
+  const scaleX = mmW / worldWidth;
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(0, 30, 60, 0.5)';
+  ctx.fillRect(mmX, mmY, mmW, mmH);
+
+  ctx.fillStyle = 'rgba(40, 30, 10, 0.7)';
+  for (const oil of oilSpills) {
+    ctx.fillRect(mmX + oil.x * scaleX - 2, mmY, 4, mmH);
+  }
+
+  ctx.fillStyle = '#ffd700';
+  for (const coin of coins) {
+    if (coin.collected) continue;
+    ctx.fillRect(mmX + coin.x * scaleX - 1, mmY + 2, 3, mmH - 4);
+  }
+
+  ctx.fillStyle = '#f5a623';
+  ctx.fillRect(mmX + fish.x * scaleX - 2, mmY, 4, mmH);
+
+  ctx.strokeStyle = 'rgba(100, 180, 255, 0.4)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(mmX, mmY, mmW, mmH);
+
+  ctx.restore();
+}
+
+function drawMenu() {
+  drawOceanBackground();
+  ctx.save();
+  ctx.textAlign = 'center';
+
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 40px "Segoe UI", Arial, sans-serif';
+  ctx.fillText('Fisch im Meer', canvas.width / 2, canvas.height * 0.3);
+
+  // Animated fish on menu
+  ctx.save();
+  ctx.translate(canvas.width / 2, canvas.height * 0.42);
+  ctx.scale(2, 2);
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 24, 14, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#f5a623';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(-20, 0);
+  ctx.lineTo(-32, -12 + Math.sin(gameTime * 3) * 5);
+  ctx.lineTo(-32, 12 + Math.sin(gameTime * 3) * 5);
+  ctx.closePath();
+  ctx.fillStyle = '#e8832a';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(12, -3, 5, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(13.5, -3, 2.5, 0, Math.PI * 2);
+  ctx.fillStyle = '#222';
+  ctx.fill();
+  ctx.restore();
+
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+  ctx.font = '16px "Segoe UI", Arial, sans-serif';
+  ctx.fillText('Hoch/Runter oder Touch', canvas.width / 2, canvas.height * 0.55);
+  ctx.fillText('Sammle alle Munzen!', canvas.width / 2, canvas.height * 0.60);
+  ctx.fillText('Weiche den Olflecken aus!', canvas.width / 2, canvas.height * 0.65);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 20px "Segoe UI", Arial, sans-serif';
+  ctx.globalAlpha = 0.8 + Math.sin(gameTime * 3) * 0.2;
+  ctx.fillText('Tippen zum Starten', canvas.width / 2, canvas.height * 0.78);
+
+  ctx.restore();
+}
+
+function drawGameOver() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ff4444';
+  ctx.font = 'bold 40px "Segoe UI", Arial, sans-serif';
+  ctx.fillText('Game Over', canvas.width / 2, canvas.height * 0.35);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = '18px "Segoe UI", Arial, sans-serif';
+  ctx.fillText(`Erreicht: Level ${level}`, canvas.width / 2, canvas.height * 0.48);
+  ctx.fillText(`Punkte: ${score}`, canvas.width / 2, canvas.height * 0.55);
+
+  ctx.font = 'bold 18px "Segoe UI", Arial, sans-serif';
+  ctx.globalAlpha = 0.8 + Math.sin(gameTime * 3) * 0.2;
+  ctx.fillText('[ LEERTASTE ]', canvas.width / 2, canvas.height * 0.7);
+
+  ctx.restore();
+}
+
+function drawLevelComplete() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 36px "Segoe UI", Arial, sans-serif';
+  ctx.fillText(`Level ${level}`, canvas.width / 2, canvas.height * 0.33);
+  ctx.fillText('geschafft!', canvas.width / 2, canvas.height * 0.39);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = '18px "Segoe UI", Arial, sans-serif';
+  ctx.fillText(`Punkte: ${score}`, canvas.width / 2, canvas.height * 0.50);
+  ctx.fillText(`Nachstes Level: ${level + 1}`, canvas.width / 2, canvas.height * 0.56);
+
+  ctx.font = 'bold 18px "Segoe UI", Arial, sans-serif';
+  ctx.globalAlpha = 0.8 + Math.sin(gameTime * 3) * 0.2;
+  ctx.fillText('[ LEERTASTE ]', canvas.width / 2, canvas.height * 0.7);
+
+  ctx.restore();
+}
+
+// --- Main Loop ---
+let lastTime = 0;
+
+function gameLoop(timestamp) {
+  const dt = Math.min((timestamp - lastTime) / 1000, 0.05);
+  lastTime = timestamp;
+
+  update(dt);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (gameState === STATE.MENU) {
+    drawMenu();
+  } else {
+    drawOceanBackground();
+    drawWorldBorder();
+    drawSeafloor();
+    drawBubbles();
+    for (const oil of oilSpills) drawOilSpill(oil);
+    for (const coin of coins) drawCoin(coin);
+    drawParticles();
+    drawFish(fish.x, fish.y);
+    drawHUD();
+    drawMinimap();
+
+    if (gameState === STATE.LEVEL_COMPLETE) drawLevelComplete();
+    if (gameState === STATE.GAME_OVER) drawGameOver();
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
