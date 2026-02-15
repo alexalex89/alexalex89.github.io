@@ -236,7 +236,7 @@ function update(dt) {
     const targetY = touchY + camera.y;
     const diff = targetY - fish.y;
     if (Math.abs(diff) > 5) {
-      fish.vy += Math.sign(diff) * accel * 3;
+      fish.vy += Math.sign(diff) * accel * 8;
     }
   }
 
