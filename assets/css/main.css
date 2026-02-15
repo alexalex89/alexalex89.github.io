@@ -236,6 +236,49 @@ justify-content: space-between;
 svg{
   max-height: 15px;
 }
+
+/* Theme toggle button */
+nav {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.feather {
+  width: 1.5rem;
+  height: 1.5rem;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.nav-toggle {
+  appearance: none;
+  -webkit-appearance: none;
+  border: none;
+  background: none;
+  margin: 0;
+  font: inherit;
+  cursor: pointer;
+  padding: 0.5rem;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--maincolor);
+}
+
+.nav-toggle:hover,
+.nav-toggle:focus {
+  background-color: var(--hovercolor);
+  color: #fff;
+}
+
 .soc:hover{
   color: white;
 }
