@@ -231,13 +231,11 @@ function update(dt) {
   if (keys['ArrowUp'] || keys['KeyW']) fish.vy -= accel;
   if (keys['ArrowDown'] || keys['KeyS']) fish.vy += accel;
 
-  // Touch: steer toward finger Y position
+  // Touch: snap fish directly to finger Y position
   if (touchY !== null) {
     const targetY = touchY + camera.y;
-    const diff = targetY - fish.y;
-    if (Math.abs(diff) > 5) {
-      fish.vy += Math.sign(diff) * accel * 8;
-    }
+    fish.y = targetY;
+    fish.vy = 0;
   }
 
   fish.vy *= fish.friction;
